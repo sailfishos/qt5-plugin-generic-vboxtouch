@@ -52,9 +52,9 @@
 #include <QPoint>
 #include <QGuiApplication>
 #include <QScreen>
-#include <QWindowSystemInterface>
 
 #include <qplatformdefs.h>
+#include <qwindowsysteminterface.h>
 
 #include <errno.h>
 
@@ -89,7 +89,7 @@ EvdevMouseHandler *EvdevMouseHandler::create(const QString &device, const QStrin
     }
 
     int fd;
-    fd = qt_safe_open(device.toLocal8Bit().constData(), O_RDONLY | O_NDELAY, 0);
+    fd = open(device.toLocal8Bit().constData(), O_RDONLY | O_NDELAY, 0);
     if (fd >= 0) {
         ::ioctl(fd, EVIOCGRAB, grab);
         return new EvdevMouseHandler(device, fd, compression, jitterLimit, scale);
@@ -116,7 +116,7 @@ EvdevMouseHandler::EvdevMouseHandler(const QString &device, int fd, bool compres
 EvdevMouseHandler::~EvdevMouseHandler()
 {
     if (m_fd >= 0)
-        qt_safe_close(m_fd);
+        close(m_fd);
 }
 
 Qt::MouseButtons EvdevMouseHandler::buttons() const

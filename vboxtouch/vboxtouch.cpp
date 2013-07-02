@@ -26,7 +26,10 @@
 #include <QDebug>
 #include <QFileInfo>
 #include <QSocketNotifier>
+#include <QStringList>
 #include <QTouchDevice>
+
+#include <qwindowsysteminterface.h>
 
 #include <fcntl.h>
 #include <string.h>
@@ -58,10 +61,11 @@ struct vbox_mouse_status_request {
     int32_t y;
 };
 const static vbox_mouse_status_request blank_mouse_status_request = {
-    .size = sizeof(vbox_mouse_status_request), // should be 36
-    .version = 0x10001
-    .type = 1, // get mouse status
-    .rc = -1; // pre-emptive error code
+    sizeof(vbox_mouse_status_request), // should be 36
+    0x10001, // request version
+    1, // type: get mouse status
+    -1, // rc: pre-emptive error code
+    0, 0, 0, 0, 0
 };
 // flag values in 'features'
 // flags sent:
@@ -153,9 +157,9 @@ VirtualboxTouchScreenHandler::~VirtualboxTouchScreenHandler()
 void VirtualboxTouchScreenHandler::shutdown()
 {
     qDebug("shutting down vboxtouch");
-    if (m_notify) {
-        delete m_notify;
-        m_notify = 0;
+    if (m_notifier) {
+        delete m_notifier;
+        m_notifier = 0;
     }
     if (m_fd >= 0) {
         close(m_fd);
@@ -192,7 +196,7 @@ void VirtualboxTouchScreenHandler::handleInput()
         return;
     }
 
-    if (!(request.features & VBOX_MOUSE_IS_ABSOLUTE)) {
+    if (!(request.features & VBOXMOUSE_IS_ABSOLUTE)) {
         qWarning("vboxtouch: need absolute coordinates but did not get them");
         if (++m_failures > MAX_PERMITTED_FAILURES)
             shutdown();
@@ -204,7 +208,7 @@ void VirtualboxTouchScreenHandler::handleInput()
     m_x = request.x;
     m_y = request.y;
     if (m_button) {
-        bool moved = m_x != request.x || m_y != request.y
+        bool moved = m_x != request.x || m_y != request.y;
         reportTouch(moved ? Qt::TouchPointMoved : Qt::TouchPointStationary);
     }
 }
@@ -214,7 +218,7 @@ void VirtualboxTouchScreenHandler::handleEvdevInput(int x, int y, Qt::MouseButto
     Q_UNUSED(x);
     Q_UNUSED(y);
     // Only the left button counts as a touch
-    bool button = (buttons & Qt::LeftButton) != 0
+    bool button = (buttons & Qt::LeftButton) != 0;
     if (button != m_button) {
         m_button = button;
         reportTouch(m_button ? Qt::TouchPointPressed : Qt::TouchPointReleased);

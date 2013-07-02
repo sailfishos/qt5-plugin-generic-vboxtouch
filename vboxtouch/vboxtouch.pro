@@ -9,8 +9,8 @@ SOURCES = main.cpp
 SOURCES += vboxtouch.cpp
 HEADERS += vboxtouch.h
 
-SOURCES += evdevmouse.cpp
-SOURCES += evdevmouse.h
+SOURCES += evdevmousehandler.cpp
+HEADERS += evdevmousehandler.h
 
 QT += core-private platformsupport-private gui-private
 
