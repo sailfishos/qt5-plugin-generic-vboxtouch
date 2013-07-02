@@ -76,7 +76,8 @@ const static vbox_mouse_status_request blank_mouse_status_request = {
 #define VBOXMOUSE_IS_ABSOLUTE 2
 
 VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specification, QObject *parent)
-    : QObject(parent), m_fd(-1), m_notifier(0), m_device(0), m_failures(0)
+    : QObject(parent), m_fd(-1), m_notifier(0), m_device(0), m_failures(0),
+      m_x(0), m_y(0), m_button(false)
 {
     setObjectName("Virtualbox Touch Handler");
 
