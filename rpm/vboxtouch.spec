@@ -1,10 +1,10 @@
-Name:		qpa-plugin-vboxtouch
+Name:		qt5-plugin-generic-vboxtouch
 Version:	1.0
 Release:	1
 Summary:	Touchscreen driver for integrated mouse pointer in VirtualBox
 Group:		Qt/Qt
 License:	LGPLv2.1
-URL:		http://github.com/nemomobile/qpa-plugin-vboxtouch.git
+URL:		http://github.com/nemomobile/qt5-plugin-generic-vboxtouch
 Source0:	%{name}-%{version}.tar.bz2
 ExclusiveArch:  %{ix86}
 
