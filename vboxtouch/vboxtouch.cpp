@@ -205,10 +205,10 @@ void VirtualboxTouchScreenHandler::handleInput()
 
     m_failures = 0; // success resets the counter
 
+    bool moved = m_x != request.x || m_y != request.y;
     m_x = request.x;
     m_y = request.y;
     if (m_button) {
-        bool moved = m_x != request.x || m_y != request.y;
         reportTouch(moved ? Qt::TouchPointMoved : Qt::TouchPointStationary);
     }
 }
