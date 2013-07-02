@@ -23,6 +23,8 @@
 
 #include <QtGui/qgenericplugin.h>
 
+#include <QStringList>
+
 #include "vboxtouch.h"
 
 class VirtualboxTouchScreenPlugin : public QGenericPlugin
@@ -33,8 +35,14 @@ class VirtualboxTouchScreenPlugin : public QGenericPlugin
 public:
     VirtualboxTouchScreenPlugin() {};
 
+    QStringList keys() const;
     QObject *create(const QString &key, const QString &specification);
 };
+
+QStringList VirtualboxTouchScreenPlugin::keys() const
+{
+    return QStringList() << "VboxTouch";
+}
 
 QObject *VirtualboxTouchScreenPlugin::create(const QString &key,
                                              const QString &specification)
