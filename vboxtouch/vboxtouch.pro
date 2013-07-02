@@ -12,7 +12,6 @@ HEADERS += vboxtouch.h
 SOURCES += evdevmousehandler.cpp
 HEADERS += evdevmousehandler.h
 
-QT += core-private platformsupport-private gui-private
+OTHER_FILES += vboxtouch.json
 
-OTHER_FILES += \
-    vboxtouch.json
+QT += core gui-private

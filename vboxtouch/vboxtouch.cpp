@@ -29,7 +29,7 @@
 #include <QStringList>
 #include <QTouchDevice>
 
-#include <qwindowsysteminterface.h>
+#include <qpa/qwindowsysteminterface.h>
 
 #include <fcntl.h>
 #include <string.h>

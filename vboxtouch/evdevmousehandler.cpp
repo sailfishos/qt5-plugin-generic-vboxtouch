@@ -54,7 +54,7 @@
 #include <QScreen>
 
 #include <qplatformdefs.h>
-#include <qwindowsysteminterface.h>
+#include <qpa/qwindowsysteminterface.h>
 
 #include <errno.h>
 
