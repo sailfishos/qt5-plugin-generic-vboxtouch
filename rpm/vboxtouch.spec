@@ -31,5 +31,4 @@ make %{?jobs:-j%jobs}
 
 %files
 %defattr(-,root,root,-)
-%{_libdir}/qt5/plugins/generic/vboxtouch.so
-
+%{_libdir}/qt5/plugins/generic/libvboxtouchplugin.so
