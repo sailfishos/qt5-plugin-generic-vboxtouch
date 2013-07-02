@@ -129,9 +129,9 @@ VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specif
             break;
         }
     }
-    // Default device name if nothing was set
+    // Default device name if nothing was set, based on Virtualbox's default.
     if (evdev_device.isEmpty())
-        evdev_device = "/dev/input/mouse0";
+        evdev_device = "/dev/input/by-path/platform-i8042-serio-1-event-mouse";
     qDebug("vboxtouch: Using evdev device %s", qPrintable(evdev_device));
 
     m_mouse = EvdevMouseHandler::create(evdev_device, specification);
