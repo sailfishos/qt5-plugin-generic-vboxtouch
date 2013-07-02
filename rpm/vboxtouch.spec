@@ -6,6 +6,7 @@ Group:		Qt/Qt
 License:	LGPLv2.1
 URL:		http://github.com/nemomobile/qt5-plugin-generic-vboxtouch
 Source0:	%{name}-%{version}.tar.bz2
+Source1:        70-vboxtouch.rules
 ExclusiveArch:  %{ix86}
 
 BuildRequires:	pkgconfig(Qt5Core)
@@ -28,7 +29,10 @@ make %{?jobs:-j%jobs}
 
 %install
 %qmake5_install
+mkdir -p %{buildroot}/lib/udev/rules.d
+cp %{S:1} %{buildroot}/lib/udev/rules.d/
 
 %files
 %defattr(-,root,root,-)
 %{_libdir}/qt5/plugins/generic/libvboxtouchplugin.so
+/lib/udev/rules.d/*
