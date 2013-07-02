@@ -1,0 +1,7 @@
+*.o
+*.moc
+moc_*
+qrc_*
+*.pro.user*
+Makefile
+*.so
