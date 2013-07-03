@@ -30,15 +30,17 @@
 #include <sys/ioctl.h>
 
 /*
- * Cursor taken from "Elastic" theme, cursor "circle" layer 2
+ * Cursor based on "Elastic" theme, cursor "circle" layers 3+
  * url: http://gnome-look.org/content/show.php/Elastic?content=158064
  * author: Marko Flores
  * license: LGPL
  * With thanks!
+ *
+ * Changes: convert to gray by copying R value to G
  */
 #define CURSOR circle
 // warning, these files have to contain the same width and height.
-// -mask.xbm was derived from the xpm
+// -mask.xbm just has the non-transparent pixels from the xpm.
 #include "circle.xpm"  // 32 bpp rgba map
 #include "circle-mask.xbm"  // 1 bpp AND map
 
