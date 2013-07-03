@@ -41,6 +41,8 @@
 
 #include "evdevmousehandler.h"
 
+extern bool set_pointer_shape_ioctl(int fd); // from setshape.cpp
+
 // The reported x and y coordinates are in the range 0 to 65535 (0xffff)
 #define VBOX_COORD_MAX 65535
 
@@ -105,6 +107,9 @@ VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specif
         qWarning("vboxtouch: cannot open %s: %s", qPrintable(device_name), strerror(errno));
         return;
     }
+
+    // We have to set a shape before HOST_DRAWS_CURSOR will work
+    set_pointer_shape_ioctl(m_fd);
 
     // Tell vboxguest our desired feature flags
     uint32_t features = VBOXMOUSE_WANT_ABSOLUTE | VBOXMOUSE_NEW_PROTOCOL | VBOXMOUSE_HOST_DRAWS_CURSOR;
