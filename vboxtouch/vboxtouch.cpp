@@ -249,6 +249,7 @@ void VirtualboxTouchScreenHandler::reportTouch(Qt::TouchPointState state)
     tp.area = QRectF(0, 0, 4, 4);
     tp.area.moveCenter(QPointF(normal_x * (screen.width() - 1),
                                normal_y * (screen.height() - 1)));
+    tp.rawPositions.append(QPointF(m_x, m_y));
 
     QList<QWindowSystemInterface::TouchPoint> touchpoints;
     QWindowSystemInterface::handleTouchEvent(0, m_device, touchpoints << tp);
