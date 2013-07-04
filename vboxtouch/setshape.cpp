@@ -37,6 +37,7 @@
  * With thanks!
  *
  * Changes: convert to gray by copying R value to G
+ *          make plus sign 1px larger
  */
 #define CURSOR circle
 // warning, these files have to contain the same width and height.
