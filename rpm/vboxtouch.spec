@@ -35,4 +35,5 @@ cp %{S:1} %{buildroot}/lib/udev/rules.d/
 %files
 %defattr(-,root,root,-)
 %{_libdir}/qt5/plugins/generic/libvboxtouchplugin.so
+%{_libdir}/cmake/Qt5Gui/Qt5Gui_VirtualboxTouchScreenPlugin.cmake
 /lib/udev/rules.d/*
