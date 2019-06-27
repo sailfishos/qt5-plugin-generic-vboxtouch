@@ -55,11 +55,20 @@ extern bool set_pointer_shape_ioctl(int fd); // from setshape.cpp
 // Give up after this many ioctl failures in a row
 #define MAX_PERMITTED_FAILURES 5
 
+struct vbox_header {
+    uint32_t size;
+    uint32_t version;
+    uint32_t type;
+    int32_t rc;
+    uint32_t out;
+    uint32_t reserved2;
+};
+
 struct vbox_mouse_status_request {
     uint32_t size;
     uint32_t version;
     uint32_t type;
-    uint32_t rc;
+    int32_t rc;
     uint32_t reserved1;
     uint32_t reserved2;
     uint32_t features;
@@ -80,6 +89,28 @@ const static vbox_mouse_status_request blank_mouse_status_request = {
 #define VBOXMOUSE_NEW_PROTOCOL 16
 // flags received:
 #define VBOXMOUSE_IS_ABSOLUTE 2
+
+struct vbox_set_mouse_status {
+    uint32_t size;
+    uint32_t version;
+    uint32_t type;
+    int32_t rc;
+    uint32_t out;
+    uint32_t reserved2;
+    union {
+        struct {
+            /** Mouse status flags (VBOXMOUSE_XXX). */
+            uint32_t features;
+        } in;
+    } u;
+};
+const static vbox_set_mouse_status set_mouse_status = {
+    sizeof(vbox_set_mouse_status),
+    0x10001, // request version
+    0, // type: default
+    -1, // rc: pre-emptive error code
+    sizeof(vbox_header), 0, { VBOXMOUSE_WANT_ABSOLUTE | VBOXMOUSE_NEW_PROTOCOL | VBOXMOUSE_HOST_DRAWS_CURSOR }
+};
 
 VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specification, QObject *parent)
     : QObject(parent), m_fd(-1), m_notifier(0), m_device(0), m_failures(0),
@@ -112,8 +143,8 @@ VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specif
     set_pointer_shape_ioctl(m_fd);
 
     // Tell vboxguest our desired feature flags
-    uint32_t features = VBOXMOUSE_WANT_ABSOLUTE | VBOXMOUSE_NEW_PROTOCOL | VBOXMOUSE_HOST_DRAWS_CURSOR;
-    int err = ioctl(m_fd, _IOWR('V', 10, features), &features);
+    vbox_set_mouse_status features = set_mouse_status;
+    int err = ioctl(m_fd, _IOWR('V', 15, features), &features);
     if (err != 0) {
         if (err < 0)
             qWarning("vboxtouch init: ioctl error: %s", strerror(errno));
