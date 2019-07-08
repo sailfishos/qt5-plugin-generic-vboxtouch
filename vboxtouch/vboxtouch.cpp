@@ -1,6 +1,6 @@
 /****************************************************************************
 **
-** Copyright (C) 2013 Jolla Ltd.
+** Copyright (C) 2019 Jolla Ltd.
 ** Contact: Richard Braakman <richard.braakman@jollamobile.com>
 **
 ** GNU Lesser General Public License Usage
@@ -80,6 +80,43 @@ const static vbox_mouse_status_request blank_mouse_status_request = {
 #define VBOXMOUSE_NEW_PROTOCOL 16
 // flags received:
 #define VBOXMOUSE_IS_ABSOLUTE 2
+// flags sent to framebuffer:
+#define FBIOGET_VSCREENINFO	0x4600
+
+struct ScreenGeometry
+{
+    QPoint uiOffset; // ui offset relative to framebuffer
+    QSize fbSize; // framebuffer size
+};
+
+ScreenGeometry getScreenGeometry()
+{
+    const QSize uiSize(QGuiApplication::primaryScreen()->size());
+    ScreenGeometry defaultGeometry = { QPoint(0, 0), uiSize };
+
+    /* Read framebuffer dimentions from device
+     * in case of VM resolution in extra data is higher than
+     * resolution reported by QGuiApplication::primaryScreen()->geometry().size()
+     */
+    const QString fbDevice = "/dev/fb0";
+    const int fh = open(fbDevice.toLocal8Bit().constData(), O_RDONLY);
+    if (fh < 0) {
+        qWarning("vboxtouch: cannot open framebuffer %s: %s", qPrintable(fbDevice), strerror(errno));
+        return defaultGeometry;
+    }
+
+    uint32_t var[40]; // NOTE: Not real struct
+    const int err = ioctl(fh, FBIOGET_VSCREENINFO, &var);
+    if (err != 0) {
+        qWarning("vboxtouch: framebuffer ioctl error: %s", strerror(errno));
+        return defaultGeometry;
+    }
+    const int scale = qMax(1, qEnvironmentVariableIntValue("QT_QPA_EGLFS_SCALE"));
+    const QSize fbSize(var[0] * scale, var[1] * scale);
+    return uiSize == fbSize
+            ? defaultGeometry
+            : ScreenGeometry { QPoint(uiSize.width() - fbSize.width(), uiSize.height() - fbSize.height()), fbSize };
+}
 
 VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specification, QObject *parent)
     : QObject(parent), m_fd(-1), m_notifier(0), m_device(0), m_failures(0),
@@ -241,14 +278,16 @@ void VirtualboxTouchScreenHandler::reportTouch(Qt::TouchPointState state)
 
     qreal normal_x = (qreal) m_x / VBOX_COORD_MAX;
     qreal normal_y = (qreal) m_y / VBOX_COORD_MAX;
-    QRect screen = QGuiApplication::primaryScreen()->geometry();
+    ScreenGeometry screen = getScreenGeometry();
 
     tp.pressure = m_button ? 1 : 0;
     tp.state = state;
     tp.normalPosition = QPointF(normal_x, normal_y);
     tp.area = QRectF(0, 0, 4, 4);
-    tp.area.moveCenter(QPointF(normal_x * (screen.width() - 1),
-                               normal_y * (screen.height() - 1)));
+    // Assume UI (lipstick) bottom right corner always stay in bottom right corner of the framebuffer
+    // TODO: Create command line parameter corner "ui-corner-anchor": topleft, topright, bottomleft, bottomright, center
+    tp.area.moveCenter(QPointF(normal_x * (screen.fbSize.width() - 1),
+                               normal_y * (screen.fbSize.height() - 1) + screen.uiOffset.y()));
     tp.rawPositions.append(QPointF(m_x, m_y));
 
     QList<QWindowSystemInterface::TouchPoint> touchpoints;
