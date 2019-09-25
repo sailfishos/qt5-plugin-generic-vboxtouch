@@ -38,6 +38,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <linux/fb.h>
 
 #include "evdevmousehandler.h"
 
@@ -112,8 +113,76 @@ const static vbox_set_mouse_status set_mouse_status = {
     sizeof(vbox_header), 0, { VBOXMOUSE_WANT_ABSOLUTE | VBOXMOUSE_NEW_PROTOCOL | VBOXMOUSE_HOST_DRAWS_CURSOR }
 };
 
+QRect screenGeometryFromFramebuffer()
+{
+    const QSize uiSize(QGuiApplication::primaryScreen()->size());
+    QRect defaultGeometry(QPoint(), uiSize);
+
+    /* Read framebuffer dimentions from device
+     * in case of VM resolution in VM extra data (CustomVideoMode1, GUI/LastGuestSizeHint)
+     * is different than resolution reported by QGuiApplication::primaryScreen()->geometry().size()
+     */
+    const QString fbDevice = "/dev/fb0";
+    const int fh = open(fbDevice.toLocal8Bit().constData(), O_RDONLY);
+    if (fh < 0) {
+        qWarning("vboxtouch: cannot open framebuffer %s: %s", qPrintable(fbDevice), strerror(errno));
+        return defaultGeometry;
+    }
+
+    fb_var_screeninfo var;
+    const int err = ioctl(fh, FBIOGET_VSCREENINFO, &var);
+    close(fh);
+    if (err != 0) {
+        qWarning("vboxtouch: framebuffer ioctl error: %s", strerror(errno));
+        return defaultGeometry;
+    }
+
+    const int scale = qMax(1, qEnvironmentVariableIntValue("QT_QPA_EGLFS_SCALE"));
+    const QSize fbSize(var.xres * scale, var.yres * scale);
+
+    qInfo("vboxtouch: ui size: %d,%d", uiSize.width(), uiSize.height());
+    qInfo("vboxtouch: fb size: %d,%d", fbSize.width(), fbSize.height());
+
+    /*
+     * Relative framebuffer and device screen positions
+     * (screen orientation is irrelevant):
+     *   0,0
+     *     |-------------W
+     *     | framebuffer |
+     *     |--------     |
+     *     | screen |    |
+     *     |        |    |
+     *     |        |    |
+     *     H--------|----|
+     *           uiSize fbSize
+     */
+
+    return uiSize == fbSize
+            ? defaultGeometry
+            : QRect(QPoint(0, uiSize.height() - fbSize.height()), fbSize);
+}
+
+QWindowSystemInterface::TouchPoint createTouchPoint(const QPointF &p, Qt::TouchPointState state, bool pressed, const QRect &screen)
+{
+    const qreal normal_x = p.x() / VBOX_COORD_MAX;
+    const qreal normal_y = p.y() / VBOX_COORD_MAX;
+
+    QWindowSystemInterface::TouchPoint tp;
+    tp.pressure = pressed ? 1 : 0;
+    tp.state = state;
+    tp.normalPosition = QPointF(normal_x, normal_y);
+    tp.area = QRectF(0, 0, 4, 4);
+
+    tp.area.moveCenter(QPointF(normal_x * (screen.width() - 1) + screen.x(),
+                               normal_y * (screen.height() - 1) + screen.y()));
+    tp.rawPositions.append(p);
+
+    return tp;
+}
+
 VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specification, QObject *parent)
     : QObject(parent), m_fd(-1), m_notifier(0), m_device(0), m_failures(0),
+      m_screenGeometry(screenGeometryFromFramebuffer()),
       m_button(false), m_x(0), m_y(0)
 {
     setObjectName("Virtualbox Touch Handler");
@@ -268,20 +337,9 @@ void VirtualboxTouchScreenHandler::handleEvdevInput(int x, int y, Qt::MouseButto
 
 void VirtualboxTouchScreenHandler::reportTouch(Qt::TouchPointState state)
 {
-    QWindowSystemInterface::TouchPoint tp;
+    QList<QWindowSystemInterface::TouchPoint> touchpoints {
+        createTouchPoint(QPointF(m_x, m_y), state, m_button, m_screenGeometry)
+    };
 
-    qreal normal_x = (qreal) m_x / VBOX_COORD_MAX;
-    qreal normal_y = (qreal) m_y / VBOX_COORD_MAX;
-    QRect screen = QGuiApplication::primaryScreen()->geometry();
-
-    tp.pressure = m_button ? 1 : 0;
-    tp.state = state;
-    tp.normalPosition = QPointF(normal_x, normal_y);
-    tp.area = QRectF(0, 0, 4, 4);
-    tp.area.moveCenter(QPointF(normal_x * (screen.width() - 1),
-                               normal_y * (screen.height() - 1)));
-    tp.rawPositions.append(QPointF(m_x, m_y));
-
-    QList<QWindowSystemInterface::TouchPoint> touchpoints;
-    QWindowSystemInterface::handleTouchEvent(0, m_device, touchpoints << tp);
+    QWindowSystemInterface::handleTouchEvent(0, m_device, touchpoints);
 }

@@ -26,6 +26,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QRect>
 
 class QSocketNotifier;
 class QTouchDevice;
@@ -51,6 +52,8 @@ private:
     QTouchDevice *m_device;
     EvdevMouseHandler *m_mouse;
     int m_failures;
+
+    QRect m_screenGeometry; // x,y - ui offset relative to framebuffer; size - framebuffer size
 
     // Last known mouse state
     bool m_button;
