@@ -1,8 +1,7 @@
 /****************************************************************************
 **
 ** Copyright (c) 2019 Open Mobile Platform LLС
-** Copyright (C) 2013 Jolla Ltd.
-** Contact: Richard Braakman <richard.braakman@jollamobile.com>
+** Contact: Sergey Levin <s.levin@omprussia.ru>
 **
 ** GNU Lesser General Public License Usage
 ** This file may be used under the terms of the GNU Lesser
@@ -22,50 +21,38 @@
 **
 ****************************************************************************/
 
-#ifndef VBOXTOUCH_H
-#define VBOXTOUCH_H
+#ifndef ZOOMINDICATOR_H
+#define ZOOMINDICATOR_H
 
-#include <QObject>
-#include <QString>
-#include <QRect>
+#include <QtQuick/QQuickPaintedItem>
+#include <QPoint>
 
-class QSocketNotifier;
-class QTouchDevice;
+class QPainter;
 
-class EvdevMouseHandler;
-class ZoomIndicator;
-
-class VirtualboxTouchScreenHandler : public QObject
+class ZoomIndicator : public QQuickPaintedItem
 {
     Q_OBJECT
 
 public:
-    explicit VirtualboxTouchScreenHandler(const QString &specification, QObject *parent = 0);
-    ~VirtualboxTouchScreenHandler();
+    ZoomIndicator(QQuickItem *parent = 0);
 
-private slots:
-    void handleInput(); // connected to m_notifier
-    void shutdown();
-    void handleEvdevInput(int x, int y, Qt::MouseButtons buttons);
+    QPointF p1() const;
+    QPointF p2() const;
+    bool isActive() const;
 
-protected:
-    bool eventFilter(QObject *obj, QEvent *event) override;
+    void paint(QPainter *painter);
+
+    QPointF anchor() const;
+    void setAnchor(const QPointF &anchor);
+    void moveTo(const QPointF &position);
+    void reset();
 
 private:
-    int m_fd;
-    QSocketNotifier *m_notifier;
-    QTouchDevice *m_device;
-    EvdevMouseHandler *m_mouse;
-    int m_failures;
+    QPointF m_anchor;
+    QPointF m_p1;
+    QPointF m_p2;
 
-    QRect m_screenGeometry; // x,y - ui offset relative to framebuffer; size - framebuffer size
-    ZoomIndicator *m_indicator;
-
-    // Last known mouse state
-    bool m_button;
-    int m_x;
-    int m_y;
-    void reportTouch(Qt::TouchPointState state);
+    QPoint tapPositionSecond() const;
 };
 
-#endif
+#endif // ZOOMINDICATOR_H

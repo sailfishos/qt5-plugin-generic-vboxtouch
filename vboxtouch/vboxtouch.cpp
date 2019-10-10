@@ -1,5 +1,6 @@
 /****************************************************************************
 **
+** Copyright (c) 2019 Open Mobile Platform LLС
 ** Copyright (C) 2013 Jolla Ltd.
 ** Contact: Richard Braakman <richard.braakman@jollamobile.com>
 **
@@ -29,6 +30,7 @@
 #include <QSocketNotifier>
 #include <QStringList>
 #include <QTouchDevice>
+#include <QtQuick/QQuickWindow>
 
 #include <qpa/qwindowsysteminterface.h>
 
@@ -40,6 +42,7 @@
 #include <sys/types.h>
 #include <linux/fb.h>
 
+#include "zoomindicator.h"
 #include "evdevmousehandler.h"
 
 extern bool set_pointer_shape_ioctl(int fd); // from setshape.cpp
@@ -162,6 +165,21 @@ QRect screenGeometryFromFramebuffer()
             : QRect(QPoint(0, uiSize.height() - fbSize.height()), fbSize);
 }
 
+QPointF screenPointToDevicePoint(const QPointF &p, const QRect &screen)
+{
+    const qreal normal_x = (p.x() - screen.x()) / (screen.width() - 1);
+    const qreal normal_y = (p.y() - screen.y()) / (screen.height() - 1);
+    return QPointF(normal_x * VBOX_COORD_MAX, normal_y * VBOX_COORD_MAX);
+}
+
+QPointF devicePointToScreenPoint(const QPointF &p, const QRect &screen)
+{
+    const qreal normal_x = p.x() / VBOX_COORD_MAX;
+    const qreal normal_y = p.y() / VBOX_COORD_MAX;
+    return QPointF(normal_x * (screen.width() - 1) + screen.x(),
+                   normal_y * (screen.height() - 1) + screen.y());
+}
+
 QWindowSystemInterface::TouchPoint createTouchPoint(const QPointF &p, Qt::TouchPointState state, bool pressed, const QRect &screen)
 {
     const qreal normal_x = p.x() / VBOX_COORD_MAX;
@@ -173,8 +191,7 @@ QWindowSystemInterface::TouchPoint createTouchPoint(const QPointF &p, Qt::TouchP
     tp.normalPosition = QPointF(normal_x, normal_y);
     tp.area = QRectF(0, 0, 4, 4);
 
-    tp.area.moveCenter(QPointF(normal_x * (screen.width() - 1) + screen.x(),
-                               normal_y * (screen.height() - 1) + screen.y()));
+    tp.area.moveCenter(devicePointToScreenPoint(p, screen));
     tp.rawPositions.append(p);
 
     return tp;
@@ -183,9 +200,22 @@ QWindowSystemInterface::TouchPoint createTouchPoint(const QPointF &p, Qt::TouchP
 VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specification, QObject *parent)
     : QObject(parent), m_fd(-1), m_notifier(0), m_device(0), m_failures(0),
       m_screenGeometry(screenGeometryFromFramebuffer()),
+      m_indicator(new ZoomIndicator),
       m_button(false), m_x(0), m_y(0)
 {
     setObjectName("Virtualbox Touch Handler");
+
+    qApp->installEventFilter(this);
+
+    connect(qApp, &QGuiApplication::focusWindowChanged, [this](QWindow *w) {
+        if (w == nullptr) return;
+
+        auto quickWindow = static_cast<QQuickWindow *>(w);
+        m_indicator->setParentItem(quickWindow->contentItem());
+        m_indicator->setPosition(quickWindow->position());
+        m_indicator->setWidth(quickWindow->width());
+        m_indicator->setHeight(quickWindow->height());
+    });
 
     QString device_name = QString::fromLocal8Bit(qgetenv("VIRTUALBOX_TOUCH_GUEST_DEVICE"));
     // The specification can override the device set in the environment
@@ -262,6 +292,8 @@ VirtualboxTouchScreenHandler::~VirtualboxTouchScreenHandler()
 {
     shutdown();
     // Cannot delete m_device because registerTouchDevice() holds a pointer.
+
+    delete m_indicator;
 }
 
 void VirtualboxTouchScreenHandler::shutdown()
@@ -321,6 +353,9 @@ void VirtualboxTouchScreenHandler::handleInput()
     if (m_button) {
         reportTouch(moved ? Qt::TouchPointMoved : Qt::TouchPointStationary);
     }
+
+    if (m_indicator->isActive())
+        m_indicator->moveTo(devicePointToScreenPoint(QPointF(m_x, m_y), m_screenGeometry));
 }
 
 void VirtualboxTouchScreenHandler::handleEvdevInput(int x, int y, Qt::MouseButtons buttons)
@@ -337,9 +372,32 @@ void VirtualboxTouchScreenHandler::handleEvdevInput(int x, int y, Qt::MouseButto
 
 void VirtualboxTouchScreenHandler::reportTouch(Qt::TouchPointState state)
 {
-    QList<QWindowSystemInterface::TouchPoint> touchpoints {
-        createTouchPoint(QPointF(m_x, m_y), state, m_button, m_screenGeometry)
-    };
+    QList<QWindowSystemInterface::TouchPoint> touchpoints;
+
+    if (m_indicator->isActive()) {
+        // Emulate multitouch: pinch in/out gesture
+        const QPointF p1 = screenPointToDevicePoint(m_indicator->p1(), m_screenGeometry);
+        const QPointF p2 = screenPointToDevicePoint(m_indicator->p2(), m_screenGeometry);
+        touchpoints << createTouchPoint(p1, state, m_button, m_screenGeometry)
+                    << createTouchPoint(p2, state, m_button, m_screenGeometry);
+    } else {
+        touchpoints << createTouchPoint(QPointF(m_x, m_y), state, m_button, m_screenGeometry);
+    }
 
     QWindowSystemInterface::handleTouchEvent(0, m_device, touchpoints);
+}
+
+bool VirtualboxTouchScreenHandler::eventFilter(QObject *obj, QEvent *event)
+{
+    if (event->type() == QEvent::KeyPress) {
+        QKeyEvent* key = static_cast<QKeyEvent*>(event);
+        if (key->key() == Qt::Key_Control && !m_indicator->isActive())
+            m_indicator->setAnchor(devicePointToScreenPoint(QPoint(m_x, m_y), m_screenGeometry));
+    }
+    if (event->type() == QEvent::KeyRelease) {
+        QKeyEvent* key = static_cast<QKeyEvent*>(event);
+        if (key->key() == Qt::Key_Control)
+            m_indicator->reset();
+    }
+    return QObject::eventFilter(obj, event);
 }
