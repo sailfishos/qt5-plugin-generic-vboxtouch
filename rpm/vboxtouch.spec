@@ -11,6 +11,7 @@ ExclusiveArch:  %{ix86}
 
 BuildRequires:	pkgconfig(Qt5Core)
 BuildRequires:	pkgconfig(Qt5Gui)
+BuildRequires:	pkgconfig(Qt5Quick)
 
 %description
 This driver extends Qt's platform support (QPA) for Virtualbox guests.
