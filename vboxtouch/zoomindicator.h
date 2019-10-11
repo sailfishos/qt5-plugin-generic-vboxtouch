@@ -40,7 +40,7 @@ public:
     QPointF p2() const;
     bool isActive() const;
 
-    void paint(QPainter *painter);
+    void paint(QPainter *painter) override;
 
     QPointF anchor() const;
     void setAnchor(const QPointF &anchor);
@@ -51,8 +51,6 @@ private:
     QPointF m_anchor;
     QPointF m_p1;
     QPointF m_p2;
-
-    QPoint tapPositionSecond() const;
 };
 
 #endif // ZOOMINDICATOR_H
