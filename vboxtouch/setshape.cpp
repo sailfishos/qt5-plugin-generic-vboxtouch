@@ -61,7 +61,7 @@ struct vbox_set_pointer_shape_request {
     uint32_t size;
     uint32_t version;
     uint32_t type;
-    uint32_t rc;
+    int32_t rc;
     uint32_t reserved1;
     uint32_t reserved2;
     uint32_t flags;
