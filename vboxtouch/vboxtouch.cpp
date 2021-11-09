@@ -35,8 +35,10 @@
 #include <qpa/qwindowsysteminterface.h>
 
 #include <fcntl.h>
+#include <signal.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -197,6 +199,8 @@ QWindowSystemInterface::TouchPoint createTouchPoint(const QPointF &p, Qt::TouchP
     return tp;
 }
 
+int VirtualboxTouchScreenHandler::s_quitSignalFd = -1;
+
 VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specification, QObject *parent)
     : QObject(parent), m_fd(-1), m_notifier(0), m_device(0), m_failures(0),
       m_screenGeometry(screenGeometryFromFramebuffer()),
@@ -204,6 +208,8 @@ VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specif
       m_button(false), m_x(0), m_y(0)
 {
     setObjectName("Virtualbox Touch Handler");
+
+    setUpSignalHandlers();
 
     qApp->installEventFilter(this);
 
@@ -294,6 +300,54 @@ VirtualboxTouchScreenHandler::~VirtualboxTouchScreenHandler()
     // Cannot delete m_device because registerTouchDevice() holds a pointer.
 
     delete m_indicator;
+
+    if (s_quitSignalFd >= 0) {
+        ::close(s_quitSignalFd);
+        s_quitSignalFd = -1;
+    }
+}
+
+void VirtualboxTouchScreenHandler::setUpSignalHandlers()
+{
+    s_quitSignalFd = ::eventfd(0, 0);
+    if (s_quitSignalFd == -1) {
+        qWarning("Failed to create eventfd object for signal handling");
+        return;
+    }
+
+    m_quitSignalNotifier.reset(new QSocketNotifier(s_quitSignalFd, QSocketNotifier::Read, this));
+    connect(m_quitSignalNotifier.data(), &QSocketNotifier::activated, qApp, [] {
+        uint64_t tmp;
+        ssize_t unused = ::read(s_quitSignalFd, &tmp, sizeof(tmp));
+        Q_UNUSED(unused);
+
+        qDebug("Signal handled - now exit");
+        QCoreApplication::exit(0);
+    });
+
+    // We need to catch the SIGTERM and SIGINT signals, so that we can do a
+    // proper shutdown of Qt and the lipstick, and avoid crashes, hangs and
+    // reboots (e.g. during user switching).
+    // This actions is similar to actions in the qt5-qpa-hwcomposer-plugin
+    // that is not exists in the emulator so we doing it here.
+    struct sigaction action;
+    action.sa_handler = quitSignalHandler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    action.sa_flags |= SA_RESTART;
+    if (sigaction(SIGTERM, &action, NULL))
+        qWarning("Failed to set up SIGINT handling");
+    if (sigaction(SIGINT, &action, NULL))
+        qWarning("Failed to set up SIGTERM handling");
+}
+
+void VirtualboxTouchScreenHandler::quitSignalHandler(int sig)
+{
+    uint64_t a = 1;
+    ssize_t unused = ::write(s_quitSignalFd, &a, sizeof(a));
+    Q_UNUSED(unused);
+
+    qDebug("Exiting on signal: %d", sig);
 }
 
 void VirtualboxTouchScreenHandler::shutdown()
