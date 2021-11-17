@@ -61,11 +61,17 @@ private:
     QRect m_screenGeometry; // x,y - ui offset relative to framebuffer; size - framebuffer size
     ZoomIndicator *m_indicator;
 
+    static int s_quitSignalFd;
+    QScopedPointer<QSocketNotifier> m_quitSignalNotifier;
+
     // Last known mouse state
     bool m_button;
     int m_x;
     int m_y;
     void reportTouch(Qt::TouchPointState state);
+
+    void setUpSignalHandlers();
+    static void quitSignalHandler(int sig);
 };
 
 #endif
