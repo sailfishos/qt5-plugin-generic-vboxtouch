@@ -6,7 +6,7 @@ License:	LGPLv2
 URL:		http://github.com/nemomobile/qt5-plugin-generic-vboxtouch
 Source0:	%{name}-%{version}.tar.bz2
 Source1:        70-vboxtouch.rules
-ExclusiveArch:  %{ix86}
+ExclusiveArch:  %{ix86} x86_64
 
 BuildRequires:	pkgconfig(Qt5Core)
 BuildRequires:	pkgconfig(Qt5Gui)
