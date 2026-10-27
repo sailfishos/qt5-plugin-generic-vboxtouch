@@ -1,5 +1,5 @@
 /* XPM */
-static char * circle_xpm[] = {
+static const char * const circle_xpm[] = {
 "48 48 37 1",
 " 	c None",
 ".	c #7E7E7E",

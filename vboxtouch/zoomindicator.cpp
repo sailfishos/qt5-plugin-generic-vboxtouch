@@ -24,6 +24,7 @@
 #include "zoomindicator.h"
 
 #include <QPainter>
+#include <QPainterPath>
 #include <QPen>
 
 static const int radius = 30;

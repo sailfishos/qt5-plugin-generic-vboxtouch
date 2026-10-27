@@ -29,10 +29,20 @@
 #include <QGuiApplication>
 #include <QSocketNotifier>
 #include <QStringList>
+#include <QKeyEvent>
+#include <QScreen>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#include <QPointingDevice>
+#else
 #include <QTouchDevice>
+#endif
 #include <QtQuick/QQuickWindow>
 
 #include <qpa/qwindowsysteminterface.h>
+#include <private/qguiapplication_p.h>
+#include <private/qhighdpiscaling_p.h>
+#include <private/qinputdevicemanager_p.h>
+#include <QLoggingCategory>
 
 #include <fcntl.h>
 #include <signal.h>
@@ -48,6 +58,8 @@
 #include "evdevmousehandler.h"
 
 extern bool set_pointer_shape_ioctl(int fd); // from setshape.cpp
+
+Q_LOGGING_CATEGORY(lcVboxTouch, "vboxtouch")
 
 // The reported x and y coordinates are in the range 0 to 65535 (0xffff)
 #define VBOX_COORD_MAX 65535
@@ -115,12 +127,23 @@ const static vbox_set_mouse_status set_mouse_status = {
     0x10001, // request version
     0, // type: default
     -1, // rc: pre-emptive error code
-    sizeof(vbox_header), 0, { VBOXMOUSE_WANT_ABSOLUTE | VBOXMOUSE_NEW_PROTOCOL | VBOXMOUSE_HOST_DRAWS_CURSOR }
+    sizeof(vbox_header), 0, { { VBOXMOUSE_WANT_ABSOLUTE | VBOXMOUSE_NEW_PROTOCOL | VBOXMOUSE_HOST_DRAWS_CURSOR } }
 };
+
+// Qt 6 moved the touch point states to QEventPoint, keeping their values.
+static const VboxTouchPointState TouchPointPressed = VboxTouchPointState(Qt::TouchPointPressed);
+static const VboxTouchPointState TouchPointMoved = VboxTouchPointState(Qt::TouchPointMoved);
+static const VboxTouchPointState TouchPointStationary = VboxTouchPointState(Qt::TouchPointStationary);
+static const VboxTouchPointState TouchPointReleased = VboxTouchPointState(Qt::TouchPointReleased);
 
 QRect screenGeometryFromFramebuffer()
 {
-    const QSize uiSize(QGuiApplication::primaryScreen()->size());
+    const QScreen *primaryScreen = QGuiApplication::primaryScreen();
+    if (primaryScreen == nullptr) {
+        qWarning("vboxtouch: no screen to map touches to");
+        return QRect();
+    }
+    const QSize uiSize(primaryScreen->size());
     QRect defaultGeometry(QPoint(), uiSize);
 
     /* Read framebuffer dimentions from device
@@ -182,18 +205,27 @@ QPointF devicePointToScreenPoint(const QPointF &p, const QRect &screen)
                    normal_y * (screen.height() - 1) + screen.y());
 }
 
-QWindowSystemInterface::TouchPoint createTouchPoint(const QPointF &p, Qt::TouchPointState state, bool pressed, const QRect &screen)
+// Qt takes touch and wheel positions in native pixels, and scales them back
+// by the primary screen's factor when it has no window to go by.
+QPointF toNativePixels(const QPointF &p)
+{
+    QScreen *screen = QGuiApplication::primaryScreen();
+    return screen ? QHighDpi::toNativePixels(p, screen) : p;
+}
+
+QWindowSystemInterface::TouchPoint createTouchPoint(int id, const QPointF &p, VboxTouchPointState state, bool pressed, const QRect &screen)
 {
     const qreal normal_x = p.x() / VBOX_COORD_MAX;
     const qreal normal_y = p.y() / VBOX_COORD_MAX;
 
     QWindowSystemInterface::TouchPoint tp;
+    tp.id = id;
     tp.pressure = pressed ? 1 : 0;
     tp.state = state;
     tp.normalPosition = QPointF(normal_x, normal_y);
     tp.area = QRectF(0, 0, 4, 4);
 
-    tp.area.moveCenter(devicePointToScreenPoint(p, screen));
+    tp.area.moveCenter(toNativePixels(devicePointToScreenPoint(p, screen)));
     tp.rawPositions.append(p);
 
     return tp;
@@ -202,30 +234,63 @@ QWindowSystemInterface::TouchPoint createTouchPoint(const QPointF &p, Qt::TouchP
 int VirtualboxTouchScreenHandler::s_quitSignalFd = -1;
 
 VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specification, QObject *parent)
-    : QObject(parent), m_fd(-1), m_notifier(0), m_device(0), m_failures(0),
-      m_screenGeometry(screenGeometryFromFramebuffer()),
-      m_indicator(new ZoomIndicator),
-      m_button(false), m_x(0), m_y(0)
+    : QObject(parent), m_mode(VboxGuestMode), m_fd(-1), m_notifier(nullptr), m_device(nullptr),
+      m_failures(0), m_indicator(new ZoomIndicator),
+      m_button(false), m_x(0), m_y(0), m_positionKnown(false), m_draining(false)
 {
     setObjectName("Virtualbox Touch Handler");
 
-    setUpSignalHandlers();
+    const QStringList options = specification.split(':');
+    bool modeGiven = false;
+    for (const QString &option : options) {
+        if (option == QLatin1String("mode=evdev")) {
+            m_mode = EvdevMode;
+            modeGiven = true;
+        } else if (option == QLatin1String("mode=vboxguest")) {
+            m_mode = VboxGuestMode;
+            modeGiven = true;
+        } else if (option.startsWith(QLatin1String("mode="))) {
+            qWarning("vboxtouch: unknown %s, using mode=vboxguest", qPrintable(option));
+        }
+    }
 
     qApp->installEventFilter(this);
 
-    connect(qApp, &QGuiApplication::focusWindowChanged, [this](QWindow *w) {
-        if (w == nullptr) return;
+    connect(qApp, &QGuiApplication::focusWindowChanged, this, [this](QWindow *w) {
+        // The indicator is a Quick item; any other kind of window cannot hold it.
+        auto quickWindow = qobject_cast<QQuickWindow *>(w);
+        if (quickWindow == nullptr) return;
 
-        auto quickWindow = static_cast<QQuickWindow *>(w);
         m_indicator->setParentItem(quickWindow->contentItem());
         m_indicator->setPosition(quickWindow->position());
         m_indicator->setWidth(quickWindow->width());
         m_indicator->setHeight(quickWindow->height());
     });
 
+    if (m_mode == EvdevMode) {
+        initEvdev(options, specification);
+    } else {
+        initVboxGuest(options, specification);
+        // A guest without the old vboxguest interface (the guest additions in
+        // the mainline kernel) still has its devices: without a mode given,
+        // as in "VBoxTouch:/dev/input/event3:/dev/input/event5", use those.
+        if (!modeGiven && m_mice.isEmpty()) {
+            qWarning("vboxtouch: vboxguest cannot be used, trying mode=evdev");
+            m_mode = EvdevMode;
+            initEvdev(options, specification);
+        }
+    }
+}
+
+void VirtualboxTouchScreenHandler::initVboxGuest(const QStringList &options, const QString &specification)
+{
+    setUpSignalHandlers();
+
+    m_screenGeometry = screenGeometryFromFramebuffer();
+
     QString device_name = QString::fromLocal8Bit(qgetenv("VIRTUALBOX_TOUCH_GUEST_DEVICE"));
     // The specification can override the device set in the environment
-    Q_FOREACH (QString option, specification.split(':')) {
+    for (const QString &option : options) {
         if (option.startsWith("vboxguest=")) {
             device_name = option.section('=', 1);
             break;
@@ -260,17 +325,18 @@ VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specif
     }
 
     m_notifier = new QSocketNotifier(m_fd, QSocketNotifier::Read, this);
-    connect(m_notifier, SIGNAL(activated(int)), this, SLOT(handleInput()));
+    connect(m_notifier, &QSocketNotifier::activated,
+            this, &VirtualboxTouchScreenHandler::handleInput);
 
     QString evdev_device = QString::fromLocal8Bit(qgetenv("VIRTUALBOX_TOUCH_EVDEV_MOUSE"));
-    Q_FOREACH (QString option, specification.split(':')) {
+    for (const QString &option : options) {
         if (option.startsWith("evdev=")) {
             evdev_device = option.section('=', 1);
             break;
         }
         // syntax compatible with evdev plugins
         if (option.startsWith("/dev/")) {
-            device_name = option;
+            evdev_device = option;
             break;
         }
     }
@@ -279,19 +345,97 @@ VirtualboxTouchScreenHandler::VirtualboxTouchScreenHandler(const QString &specif
         evdev_device = "/dev/input/by-path/platform-i8042-serio-1-event-mouse";
     qDebug("vboxtouch: Using evdev device %s", qPrintable(evdev_device));
 
-    m_mouse = EvdevMouseHandler::create(evdev_device, specification);
-    if (!m_mouse) {
+    EvdevMouseHandler *mouse = EvdevMouseHandler::create(evdev_device, specification);
+    if (!mouse) {
         qWarning("vboxtouch init: cannot open evdev mouse %s", qPrintable(evdev_device));
         shutdown();
         return;
     }
-    connect(m_mouse, SIGNAL(handleMouseEvent(int,int,Qt::MouseButtons)), this, SLOT(handleEvdevInput(int,int,Qt::MouseButtons)));
+    mouse->setParent(this);
+    m_mice << mouse;
+    connect(mouse, &EvdevMouseHandler::handleMouseEvent,
+            this, &VirtualboxTouchScreenHandler::handleEvdevInput);
+    connect(mouse, &EvdevMouseHandler::handleWheelEvent,
+            this, &VirtualboxTouchScreenHandler::handleEvdevWheel);
 
+    registerTouchDevice(QFileInfo(device_name).fileName());
+}
+
+void VirtualboxTouchScreenHandler::initEvdev(const QStringList &options, const QString &specification)
+{
+    QStringList devices;
+    for (const QString &option : options) {
+        if (option.startsWith("evdev="))
+            devices << option.section('=', 1);
+        else if (option.startsWith("/dev/")) // syntax compatible with evdev plugins
+            devices << option;
+    }
+    if (devices.isEmpty()) {
+        const QStringList envDevices =
+            QString::fromLocal8Bit(qgetenv("VIRTUALBOX_TOUCH_EVDEV_MOUSE")).split(':');
+        for (const QString &device : envDevices) {
+            if (!device.isEmpty())
+                devices << device;
+        }
+    }
+    if (devices.isEmpty()) {
+        qWarning("vboxtouch init: mode=evdev needs evdev devices, in the specification "
+                 "or in VIRTUALBOX_TOUCH_EVDEV_MOUSE");
+        return;
+    }
+
+    // Each device is asked for absolute positions; one that has none stays
+    // relative, and only its buttons are used.
+    for (const QString &device : devices) {
+        qDebug("vboxtouch: Using evdev device %s", qPrintable(device));
+        EvdevMouseHandler *mouse = EvdevMouseHandler::create(device, specification + QLatin1String(":abs"));
+        if (!mouse) {
+            // Which devices a VM has depends on its settings; use the others.
+            qWarning("vboxtouch init: cannot open evdev device %s", qPrintable(device));
+            continue;
+        }
+        mouse->setParent(this);
+        m_mice << mouse;
+        connect(mouse, &EvdevMouseHandler::handleMouseEvent,
+                this, &VirtualboxTouchScreenHandler::handleEvdevInput);
+        connect(mouse, &EvdevMouseHandler::handleWheelEvent,
+                this, &VirtualboxTouchScreenHandler::handleEvdevWheel);
+    }
+    if (m_mice.isEmpty()) {
+        qWarning("vboxtouch init: none of the evdev devices could be opened");
+        return;
+    }
+
+    registerTouchDevice(QStringLiteral("vboxtouch"));
+}
+
+void VirtualboxTouchScreenHandler::registerTouchDevice(const QString &name)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    // Two points: the zoom gesture reports a pair of fingers.
+    m_device = new QPointingDevice(name, 1,
+                                   QInputDevice::DeviceType::TouchScreen,
+                                   QPointingDevice::PointerType::Finger,
+                                   QInputDevice::Capability::Position, 2, 0);
+    QWindowSystemInterface::registerInputDevice(m_device);
+#else
     m_device = new QTouchDevice;
-    m_device->setName(QFileInfo(device_name).fileName());
+    m_device->setName(name);
     m_device->setType(QTouchDevice::TouchScreen);
     m_device->setCapabilities(QTouchDevice::Position);
     QWindowSystemInterface::registerTouchDevice(m_device);
+#endif
+}
+
+QRect VirtualboxTouchScreenHandler::screenGeometry() const
+{
+    if (m_mode == VboxGuestMode)
+        return m_screenGeometry;
+
+    // The screen as it is now, not as it was when the plugin was loaded: that
+    // happens while the compositor is still setting its screen up.
+    const QScreen *screen = QGuiApplication::primaryScreen();
+    return screen ? screen->geometry() : QRect();
 }
 
 VirtualboxTouchScreenHandler::~VirtualboxTouchScreenHandler()
@@ -355,16 +499,14 @@ void VirtualboxTouchScreenHandler::shutdown()
     qDebug("shutting down vboxtouch");
     if (m_notifier) {
         delete m_notifier;
-        m_notifier = 0;
+        m_notifier = nullptr;
     }
     if (m_fd >= 0) {
         close(m_fd);
         m_fd = -1;
     }
-    if  (m_mouse) {
-        delete m_mouse;
-        m_mouse = 0;
-    }
+    qDeleteAll(m_mice);
+    m_mice.clear();
 }
 
 void VirtualboxTouchScreenHandler::handleInput()
@@ -404,41 +546,124 @@ void VirtualboxTouchScreenHandler::handleInput()
     bool moved = m_x != request.x || m_y != request.y;
     m_x = request.x;
     m_y = request.y;
+    m_positionKnown = true;
     if (m_button) {
-        reportTouch(moved ? Qt::TouchPointMoved : Qt::TouchPointStationary);
+        reportTouch(moved ? TouchPointMoved : TouchPointStationary);
     }
 
     if (m_indicator->isActive())
         m_indicator->moveTo(devicePointToScreenPoint(QPointF(m_x, m_y), m_screenGeometry));
 }
 
-void VirtualboxTouchScreenHandler::handleEvdevInput(int x, int y, Qt::MouseButtons buttons)
+void VirtualboxTouchScreenHandler::handleEvdevInput(int x, int y, bool abs, Qt::MouseButtons buttons,
+                                                    Qt::MouseButton button, QEvent::Type type)
 {
-    Q_UNUSED(x);
-    Q_UNUSED(y);
-    // Only the left button counts as a touch
-    bool button = (buttons & Qt::LeftButton) != 0;
-    if (button != m_button) {
-        m_button = button;
-        reportTouch(m_button ? Qt::TouchPointPressed : Qt::TouchPointReleased);
+    Q_UNUSED(button);
+
+    EvdevMouseHandler *mouse = qobject_cast<EvdevMouseHandler *>(sender());
+    qCDebug(lcVboxTouch) << "input from" << (mouse ? mouse->device() : QString()) << type
+                         << "at" << x << y << (abs ? "abs" : "rel") << "buttons" << buttons;
+
+    // VirtualBox reports a click on the PS/2 mouse and where it was made on
+    // the mouse integration device, and the two are read in whatever order
+    // their notifiers fire: the position often comes second. Take in what
+    // the other devices had queued by the time of the button before it
+    // counts, or the touch lands where the pointer was before; and only
+    // that, or the moves of a drag queued after a press are lost to it.
+    if (type != QEvent::MouseMove && !m_draining && mouse) {
+        m_draining = true;
+        for (EvdevMouseHandler *other : std::as_const(m_mice)) {
+            if (other != mouse)
+                other->readMouseDataUntil(mouse->lastEventTime());
+        }
+        m_draining = false;
     }
+
+    // Nothing has moved since the compositor started, so nothing has said
+    // where the pointer is; the kernel still knows where it was left. Ask
+    // the guest additions' device first: while they run, VirtualBox reports
+    // the pointer only there, and the USB tablet's is from before they did.
+    if (m_mode == EvdevMode && !m_positionKnown && type == QEvent::MouseButtonPress) {
+        QList<EvdevMouseHandler *> candidates;
+        for (EvdevMouseHandler *other : std::as_const(m_mice)) {
+            if (other->name() == QLatin1String("VirtualBox mouse integration"))
+                candidates.prepend(other);
+            else
+                candidates.append(other);
+        }
+        for (const EvdevMouseHandler *other : std::as_const(candidates)) {
+            int px, py;
+            if (other->currentPosition(&px, &py) && (px != 0 || py != 0)) {
+                m_x = px;
+                m_y = py;
+                m_positionKnown = true;
+                break;
+            }
+        }
+    }
+
+    // In vboxguest mode the position comes from vboxguest, and a device that
+    // is not absolute only says how far it moved: both only add their buttons.
+    bool moved = false;
+    if (m_mode == EvdevMode && abs) {
+        moved = m_x != x || m_y != y;
+        m_x = x;
+        m_y = y;
+        m_positionKnown = true;
+    }
+
+    // Only the left button counts as a touch, held on any of the devices:
+    // with the guest additions running, VirtualBox reports the position on
+    // its mouse integration device and the buttons on the PS/2 mouse, and a
+    // move on the one says nothing about the button held on the other.
+    m_miceButtons[mouse] = buttons;
+    Qt::MouseButtons held = Qt::NoButton;
+    for (QHash<QObject *, Qt::MouseButtons>::const_iterator it = m_miceButtons.constBegin();
+         it != m_miceButtons.constEnd(); ++it)
+        held |= it.value();
+    bool leftButton = (held & Qt::LeftButton) != 0;
+    if (leftButton != m_button) {
+        m_button = leftButton;
+        reportTouch(m_button ? TouchPointPressed : TouchPointReleased);
+    } else if (moved && m_button) {
+        reportTouch(TouchPointMoved);
+    }
+
+    if (moved && m_indicator->isActive())
+        m_indicator->moveTo(devicePointToScreenPoint(QPointF(m_x, m_y), screenGeometry()));
 }
 
-void VirtualboxTouchScreenHandler::reportTouch(Qt::TouchPointState state)
+void VirtualboxTouchScreenHandler::handleEvdevWheel(QPoint delta)
 {
+    // The wheel is on the PS/2 mouse, which has no position of its own.
+    if (!m_positionKnown)
+        return;
+
+    const QPointF pos = toNativePixels(devicePointToScreenPoint(QPointF(m_x, m_y), screenGeometry()));
+    qCDebug(lcVboxTouch) << "wheel" << delta << "at" << pos;
+    QWindowSystemInterface::handleWheelEvent(nullptr, pos, pos, QPoint(), delta,
+                                             QGuiApplicationPrivate::inputDeviceManager()->keyboardModifiers());
+}
+
+void VirtualboxTouchScreenHandler::reportTouch(VboxTouchPointState state)
+{
+    const QRect screen = screenGeometry();
     QList<QWindowSystemInterface::TouchPoint> touchpoints;
 
     if (m_indicator->isActive()) {
-        // Emulate multitouch: pinch in/out gesture
-        const QPointF p1 = screenPointToDevicePoint(m_indicator->p1(), m_screenGeometry);
-        const QPointF p2 = screenPointToDevicePoint(m_indicator->p2(), m_screenGeometry);
-        touchpoints << createTouchPoint(p1, state, m_button, m_screenGeometry)
-                    << createTouchPoint(p2, state, m_button, m_screenGeometry);
+        // Emulate multitouch: pinch in/out gesture, with a finger for each
+        // point (the same id twice would be the same finger).
+        const QPointF p1 = screenPointToDevicePoint(m_indicator->p1(), screen);
+        const QPointF p2 = screenPointToDevicePoint(m_indicator->p2(), screen);
+        touchpoints << createTouchPoint(0, p1, state, m_button, screen)
+                    << createTouchPoint(1, p2, state, m_button, screen);
     } else {
-        touchpoints << createTouchPoint(QPointF(m_x, m_y), state, m_button, m_screenGeometry);
+        touchpoints << createTouchPoint(0, QPointF(m_x, m_y), state, m_button, screen);
     }
 
-    QWindowSystemInterface::handleTouchEvent(0, m_device, touchpoints);
+    qCDebug(lcVboxTouch) << "touch" << int(state) << "at" << touchpoints.first().area.center()
+                         << "points" << touchpoints.size();
+    QWindowSystemInterface::handleTouchEvent(nullptr, m_device, touchpoints);
 }
 
 bool VirtualboxTouchScreenHandler::eventFilter(QObject *obj, QEvent *event)
@@ -446,7 +671,7 @@ bool VirtualboxTouchScreenHandler::eventFilter(QObject *obj, QEvent *event)
     if (event->type() == QEvent::KeyPress) {
         QKeyEvent* key = static_cast<QKeyEvent*>(event);
         if (key->key() == Qt::Key_Control && !m_indicator->isActive())
-            m_indicator->setAnchor(devicePointToScreenPoint(QPoint(m_x, m_y), m_screenGeometry));
+            m_indicator->setAnchor(devicePointToScreenPoint(QPoint(m_x, m_y), screenGeometry()));
     }
     if (event->type() == QEvent::KeyRelease) {
         QKeyEvent* key = static_cast<QKeyEvent*>(event);

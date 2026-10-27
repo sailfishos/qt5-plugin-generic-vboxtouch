@@ -5,3 +5,6 @@ qrc_*
 *.pro.user*
 Makefile
 *.so
+.qmake.stash
+target_wrapper.sh
+/tests/tst_vboxtouch

@@ -24,7 +24,9 @@
 #include <QByteArray>
 #include <QDebug>
 
+#include <errno.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <sys/ioctl.h>
@@ -126,6 +128,10 @@ bool set_pointer_shape_ioctl(int fd)
     int req_size = offsetof(vbox_set_pointer_shape_request, data)
                  + mask_size + mask_pad + pix_size;
     vbox_set_pointer_shape_request *request = (vbox_set_pointer_shape_request *)malloc(req_size);
+    if (request == NULL) {
+        qWarning("vboxtouch setpointershape: out of memory");
+        return false;
+    }
 
     *request = blank_set_pointer_shape_request;
     request->size = req_size;
@@ -140,5 +146,6 @@ bool set_pointer_shape_ioctl(int fd)
         qWarning("vboxtouch setpointershape: vboxguest error %d", err);
     else if (request->rc != 0)
         qWarning("vboxtouch setpointershape: vboxguest rc error %d", request->rc);
+    free(request);
     return err == 0;
 }
